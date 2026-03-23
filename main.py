@@ -53,10 +53,13 @@ HTML = """<!DOCTYPE html>
     .gallery-top h3 { font-family: 'Playfair Display', serif; font-size: 1.1rem; }
     .gallery-top span { font-size: 11px; color: var(--muted); }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-    .grid-item { aspect-ratio: 1; overflow: hidden; border-radius: 3px; border: 1px solid var(--border); transition: transform 0.2s, border-color 0.2s; }
+    .grid-item { aspect-ratio: 1; overflow: hidden; border-radius: 3px; border: 1px solid var(--border); transition: transform 0.2s, border-color 0.2s; background: #111; }
     .grid-item:hover { transform: scale(1.02); border-color: var(--accent); }
     .grid-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .empty { text-align: center; padding: 40px; color: var(--muted); font-size: 11px; border: 1px solid var(--border); border-radius: 3px; letter-spacing: 0.1em; }
+    .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .debug { margin-top: 8px; font-size: 10px; color: var(--muted); max-width: 600px; width: 100%; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -73,6 +76,7 @@ HTML = """<!DOCTYPE html>
 </div>
 <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
 <div class="status" id="statusEl">Ready.</div>
+<div class="debug" id="debugEl"></div>
 <div class="gallery">
   <div class="gallery-top">
     <h3>Uploaded Images</h3>
@@ -86,19 +90,21 @@ HTML = """<!DOCTYPE html>
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const statusEl = document.getElementById('statusEl');
+  const debugEl = document.getElementById('debugEl');
   const grid = document.getElementById('grid');
   const countEl = document.getElementById('countEl');
   const progressBar = document.getElementById('progressBar');
   const progressFill = document.getElementById('progressFill');
   let count = 0;
 
-  // Load existing images on page load
   async function loadImages() {
     try {
       const res = await fetch('/images');
       const images = await res.json();
       images.forEach(img => addImage(img.url, img.original, false));
-    } catch(e) {}
+    } catch(e) {
+      debugEl.textContent = 'Load error: ' + e.message;
+    }
   }
 
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('over'); });
@@ -131,9 +137,16 @@ HTML = """<!DOCTYPE html>
     try {
       const res = await fetch('/upload', { method: 'POST', body: form });
       const data = await res.json();
-      if (data.success) addImage(data.url, file.name, true);
-      else setStatus('Error: ' + data.error, 'err');
-    } catch(e) { setStatus('Upload failed.', 'err'); }
+      debugEl.textContent = 'Last response: ' + JSON.stringify(data);
+      if (data.success && data.url) {
+        addImage(data.url, file.name, true);
+      } else {
+        setStatus('Error: ' + (data.error || 'Unknown error'), 'err');
+      }
+    } catch(e) {
+      setStatus('Upload failed: ' + e.message, 'err');
+      debugEl.textContent = 'Fetch error: ' + e.message;
+    }
   }
 
   function addImage(url, name, prepend) {
@@ -143,7 +156,18 @@ HTML = """<!DOCTYPE html>
     countEl.textContent = count + ' image' + (count !== 1 ? 's' : '');
     const div = document.createElement('div');
     div.className = 'grid-item';
-    div.innerHTML = '<img src="' + url + '" alt="' + name + '" loading="lazy"/>';
+    const img = document.createElement('img');
+    img.alt = name;
+    img.loading = 'lazy';
+    img.onerror = function() {
+      debugEl.textContent = 'Image failed to load from URL: ' + url;
+      div.style.border = '1px solid var(--error)';
+    };
+    img.onload = function() {
+      debugEl.textContent = 'Image loaded OK from: ' + url;
+    };
+    img.src = url;
+    div.appendChild(img);
     if (prepend) grid.prepend(div);
     else grid.appendChild(div);
   }
@@ -175,7 +199,8 @@ def upload():
         return jsonify({'success': False, 'error': 'File type not allowed'}), 400
     try:
         result = cloudinary.uploader.upload(file, resource_type='image')
-        return jsonify({'success': True, 'url': result['secure_url']})
+        url = result.get('secure_url', '')
+        return jsonify({'success': True, 'url': url})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
