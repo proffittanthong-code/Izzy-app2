@@ -1,9 +1,18 @@
 from flask import Flask, request, jsonify, render_template_string
 import os
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
+
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.environ.get('CLOUDINARY_API_KEY'),
+    api_secret=os.environ.get('CLOUDINARY_API_SECRET')
+)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -82,11 +91,23 @@ HTML = """<!DOCTYPE html>
   const progressBar = document.getElementById('progressBar');
   const progressFill = document.getElementById('progressFill');
   let count = 0;
+
+  // Load existing images on page load
+  async function loadImages() {
+    try {
+      const res = await fetch('/images');
+      const images = await res.json();
+      images.forEach(img => addImage(img.url, img.original, false));
+    } catch(e) {}
+  }
+
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('over'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
   dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('over'); handleFiles(e.dataTransfer.files); });
   fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
   function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = 'status ' + (cls||''); }
+
   async function handleFiles(files) {
     if (!files.length) return;
     const arr = Array.from(files);
@@ -94,22 +115,28 @@ HTML = """<!DOCTYPE html>
     progressFill.style.width = '0%';
     setStatus('Uploading...');
     let done = 0;
-    for (const f of arr) { await uploadOne(f); done++; progressFill.style.width = (done/arr.length*100)+'%'; }
+    for (const f of arr) {
+      await uploadOne(f);
+      done++;
+      progressFill.style.width = (done / arr.length * 100) + '%';
+    }
     setTimeout(() => progressBar.style.display = 'none', 800);
     setStatus('✓ ' + done + ' image(s) uploaded!', 'ok');
     fileInput.value = '';
   }
+
   async function uploadOne(file) {
     const form = new FormData();
     form.append('file', file);
     try {
       const res = await fetch('/upload', { method: 'POST', body: form });
       const data = await res.json();
-      if (data.success) addImage(data.url, file.name);
+      if (data.success) addImage(data.url, file.name, true);
       else setStatus('Error: ' + data.error, 'err');
     } catch(e) { setStatus('Upload failed.', 'err'); }
   }
-  function addImage(url, name) {
+
+  function addImage(url, name, prepend) {
     const empty = document.getElementById('emptyEl');
     if (empty) empty.remove();
     count++;
@@ -117,8 +144,11 @@ HTML = """<!DOCTYPE html>
     const div = document.createElement('div');
     div.className = 'grid-item';
     div.innerHTML = '<img src="' + url + '" alt="' + name + '" loading="lazy"/>';
-    grid.prepend(div);
+    if (prepend) grid.prepend(div);
+    else grid.appendChild(div);
   }
+
+  loadImages();
 </script>
 </body>
 </html>"""
@@ -126,6 +156,15 @@ HTML = """<!DOCTYPE html>
 @app.route('/')
 def index():
     return render_template_string(HTML)
+
+@app.route('/images')
+def get_images():
+    try:
+        result = cloudinary.api.resources(type='upload', max_results=100, resource_type='image')
+        images = [{'url': r['secure_url'], 'original': r['public_id']} for r in result.get('resources', [])]
+        return jsonify(images)
+    except Exception as e:
+        return jsonify([])
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -135,7 +174,6 @@ def upload():
     if not file.filename or not allowed_file(file.filename):
         return jsonify({'success': False, 'error': 'File type not allowed'}), 400
     try:
-        import cloudinary.uploader
         result = cloudinary.uploader.upload(file, resource_type='image')
         return jsonify({'success': True, 'url': result['secure_url']})
     except Exception as e:
